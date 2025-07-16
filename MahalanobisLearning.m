@@ -1,4 +1,5 @@
-function [L_best, F2, k, Grad, Exp] = MahalanobisLearning(X, label, batchsize, improve, maxepoch, percent, CVset, boundary)
+function [L_best, F2, k, Grad, Exp] = MahalanobisLearning(X, label, batchsize, improve, ...
+    maxepoch, percent, CVset, boundary, useKL)
 % MahalanobisLearning Learns a Mahalanobis distance metric via focal loss optimization
 %
 % This function learns a linear transformation matrix L such that the 
@@ -76,6 +77,7 @@ Distthres = zeros(size(Exp));
 Distthres(LabelMatrix == 1) = (1 / boundary) * distthres;
 Distthres(LabelMatrix == 0) = boundary * distthres;
 
+% This Indicator variable is for setting hard margins, work in progress
 Indicator = (Exp > Distthres) .* LabelMatrix + (Exp < Distthres) .* (1 - LabelMatrix);
 
 modi_exp = max(1e-323, exp(-Exp));
@@ -109,11 +111,19 @@ while k < maxepoch && valid <= improve
         
         for j = 1:batches
             idx2 = shuffle2((j - 1) * batchsize + 1 : min(j * batchsize, Trainsize));
-            
+
             if isempty(TrainInd)
-                Grad = MahalanobisGradient(X, P, P_i, C, idx, idx2, Indicator);
+                train_idx = idx;
+                train_idx2 = idx2;
             else
-                Grad = MahalanobisGradient(X, P, P_i, C, TrainInd(idx), TrainInd(idx2), Indicator);
+                train_idx = TrainInd(idx);
+                train_idx2 = TrainInd(idx2);
+            end
+
+            if useKL
+                Grad = MahalanobisGradient(X, P, P_i, C, train_idx, train_idx2, true, P_label);
+            else
+                Grad = MahalanobisGradient(X, P, P_i, C, train_idx, train_idx2, false);
             end
             
             % Hyperparameters
@@ -198,12 +208,53 @@ end
 
 end
 
-function [Grad] = MahalanobisGradient(X, P, P_i, C, Ibatch, Jbatch, Indicator)
+function [Grad] = MahalanobisGradient(X, P, P_i, C, Ibatch, Jbatch, useKL, P_label)
+% Compute gradient of Mahalanobis learning objective.
+% 
+% Inputs:
+%   X         - data matrix (N x d)
+%   P         - model soft similarity matrix (N x N)
+%   P_i       - sum of similarities per sample (N x 1)
+%   C         - element-wise product P .* LabelMatrix (N x N)
+%   Ibatch    - row indices batch
+%   Jbatch    - column indices batch
+%   Indicator - binary matrix for classic loss (N x N)
+%   useKL     - boolean flag: true for KL divergence, false for classic
+%   P_label   - label-based soft similarity matrix (N x N), required if useKL=true
+%
+% Output:
+%   Grad      - gradient matrix (d x d)
 
 X_ij_all = permute(X(Ibatch,:), [3 2 1]) - X(Jbatch,:);
-focal1 = (P(Ibatch, Jbatch)' - (C(Ibatch, Jbatch)' ./ P_i(Ibatch))) .* ((1 - P_i(Ibatch)).^2);
-focal2 = ((P_i(Ibatch) .* P(Ibatch, Jbatch)') - (C(Ibatch, Jbatch)')) .* (-2 * (1 - P_i(Ibatch))) .* log(P_i(Ibatch));
-Project = permute(focal1 + focal2, [1 3 2]);
+
+if nargin < 8
+    useKL = false; % default to classic if not specified
+end
+
+if useKL
+    % KL-divergence gradient computation
+    
+    % Avoid division by zero
+    eps_val = 1e-12;
+    P_safe = max(P(Ibatch, Jbatch), eps_val);
+    P_label_safe = max(P_label(Ibatch, Jbatch), eps_val);
+    
+    % Compute element-wise difference scaled by label probs
+    % Gradient term derived from d/dM KL(P_label || P_model)
+    % d/dD KL = (P_model - P_label)
+    
+    % Note: P_i and C are unused here, but you can adapt if needed
+    
+    Diff = P_safe - P_label_safe; % (batchsize_i x batchsize_j)
+    % Project into correct dims
+    Project = permute(Diff, [1 3 2]);
+    
+else
+    % Classic gradient with focal loss
+    focal1 = (P(Ibatch,Jbatch)' - (C(Ibatch,Jbatch)' ./ P_i(Ibatch))) .* ((1 - P_i(Ibatch)) .^ 2);
+    focal2 = ((P_i(Ibatch) .* P(Ibatch,Jbatch)') - C(Ibatch,Jbatch)') .* (-2 * (1 - P_i(Ibatch))) .* log(P_i(Ibatch));
+    Project = permute(focal1 + focal2, [1 3 2]);
+end
 
 Grad = sum(pagemtimes(X_ij_all, 'transpose', Project .* X_ij_all, 'none'), 3);
 
