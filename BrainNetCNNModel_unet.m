@@ -1,4 +1,4 @@
-function [BrainNetCNNGraph] = BrainNetCNNModel_unet(LayerStruct)
+function [BrainNetCNNGraph] = BrainNetCNNModel_unet(LayerStruct, max_norm, logoutput)
   %{
   The Layer Parameters Struct should contains what's needed for building the model.
   Otherwise it will use the default setting
@@ -15,6 +15,14 @@ function [BrainNetCNNGraph] = BrainNetCNNModel_unet(LayerStruct)
 
 if ~isfield(LayerStruct,"InputShape")
     error("Input shape not specified")
+end
+
+if nargin < 2
+    max_norm = true;
+end
+
+if nargin < 3
+    logoutput = false;
 end
 
 % set default struct
@@ -67,14 +75,47 @@ final_left = [
 final_right = [
     convolution2dLayer([M 1], 1, "Name", "final_right")
     resize2dLayer("OutputSize",[M M], "Name", "final_resize_right")];
-final_out = [additionLayer(2, "Name", "final_add")
-    regressionLayer('Name','unet_output')];
+convStrongReg_1 = convolution2dLayer(1, 1, ...
+    'Name', 'final_conv1x1_1', ...
+    'Padding', 'same', ...
+    'WeightsInitializer', 'he', ...
+    'BiasInitializer', 'zeros', ...
+    'WeightL2Factor', 3);
+final_add = [
+    additionLayer(2, "Name", "final_add")
+    convStrongReg_1
+    functionLayer(@(X) (X + pagetranspose(X))./2, "Name", "symmetrise")];
+
+if logoutput
+    pos_layer = functionLayer(@(X) log(1 + exp(X)), "Name", "softplus");
+else
+    pos_layer = reluLayer;
+end
+if max_norm
+    final_out = [
+        multiplicationLayer(2,'Name',"final_mult")
+        pos_layer
+        functionLayer(@(X) X./ (max(X, [], [1 2]) + 1e-8), "Name", "max_norm")
+        regressionLayer('Name','unet_output')];
+else
+    final_out = [
+        multiplicationLayer(2,'Name',"final_mult")
+        pos_layer
+        regressionLayer('Name','unet_output')];
+end
+
+binarise_layer = functionLayer(@(X) single(X > 0), "Name", "binarise");
 
 lgraph = addLayers(lgraph,final_left);
 lgraph = addLayers(lgraph,final_right);
+lgraph = addLayers(lgraph,final_add);
+lgraph = addLayers(lgraph,binarise_layer);
 lgraph = addLayers(lgraph,final_out);
 lgraph = connectLayers(lgraph,"final_resize_left","final_add/in1");
 lgraph = connectLayers(lgraph,"final_resize_right","final_add/in2");
+lgraph = connectLayers(lgraph,"imageinput","binarise");
+lgraph = connectLayers(lgraph,"symmetrise","final_mult/in1");
+lgraph = connectLayers(lgraph,"binarise","final_mult/in2");
 
 % Stacking E2E layers, as well as constructing the decoder network at the
 % same time
@@ -106,23 +147,27 @@ for e2e_num = 1:ModelStruct.E2E.numLayers
         batchNormalizationLayer
         leakyReluLayer(ModelStruct.E2E.leaky,'Name',"decode_e2e_leaky_" + num_str)
         dropoutLayer(ModelStruct.E2E.dropprob,"Name","decode_e2e_out_" + num_str)];
+    concat_layer = concatenationLayer(3,2,'Name',"concat_" + num_str);
+    lgraph = addLayers(lgraph, concat_layer);
     lgraph = addLayers(lgraph,decode_e2e_left);
     lgraph = addLayers(lgraph,decode_e2e_right);
     lgraph = addLayers(lgraph,decode_e2e_out);
+    lgraph = connectLayers(lgraph,"e2e_out_" + num_str,"concat_" + num_str + "/in2");
+    lgraph = connectLayers(lgraph,"decode_e2e_out_" + num_str,"concat_" + num_str + "/in1");
 
     if e2e_num == 1
         lgraph = connectLayers(lgraph,"imageinput","e2e_left_1");
         lgraph = connectLayers(lgraph,"imageinput","e2e_right_1");
-        lgraph = connectLayers(lgraph,"decode_e2e_out_1","final_left");
-        lgraph = connectLayers(lgraph,"decode_e2e_out_1","final_right");
+        lgraph = connectLayers(lgraph,"concat_1","final_left");
+        lgraph = connectLayers(lgraph,"concat_1","final_right");
     else
         lgraph = connectLayers(lgraph,"e2e_out_" + string(e2e_num - 1),...
                                "e2e_left_" + num_str);
         lgraph = connectLayers(lgraph,"e2e_out_" + string(e2e_num - 1),...
                                "e2e_right_" + num_str);
-        lgraph = connectLayers(lgraph,"decode_e2e_out_" + num_str, ...
+        lgraph = connectLayers(lgraph,"concat_" + num_str, ...
                                 "decode_e2e_left_" + string(e2e_num - 1));
-        lgraph = connectLayers(lgraph,"decode_e2e_out_" + num_str, ...
+        lgraph = connectLayers(lgraph,"concat_" + num_str, ...
                                 "decode_e2e_right_" + string(e2e_num - 1));
     end
     lgraph = connectLayers(lgraph,"resize_left_" + num_str,...
