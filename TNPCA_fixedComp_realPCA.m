@@ -1,7 +1,7 @@
 function [V,U,D,XPrin,Xhat] = TNPCA_fixedComp_realPCA(X,R,Masking)
-% X_tensor = tensor(X);
-%[Vo,~,~,Uo] = hooi_popNet(X_tensor,R);
-%clear X_tensor
+
+% My adaptation according to Zhang et al.
+% Tensor network factorizations: Relationships between brain structural connectomes and traits
 % Masking is the network thresholding matrix
 
 Xhat = X;
@@ -100,4 +100,5 @@ else
     % The mathematically efficient way: y = x - basis * (basis' * x)
     y = x - basis * (basis' * x);
 end
+
 end
