@@ -1,7 +1,7 @@
 function [V,U,D,XPrin,Xhat] = TNPCA_vectorised(X,R,Masking)
-% X_tensor = tensor(X);
-%[Vo,~,~,Uo] = hooi_popNet(X_tensor,R);
-%clear X_tensor
+
+% My adaptation vectorised according to Zhang et al.
+% Tensor network factorizations: Relationships between brain structural connectomes and traits
 % Masking is the network thresholding matrix
 
 Xhat = single(X);
@@ -152,4 +152,5 @@ function v = batched_null_power_iteration(Mu, basis, num_iters, tol)
         
         v = v_new;
     end
+
 end
