@@ -1,6 +1,6 @@
 # Tensor Network PCA (TNPCA)
 
-This repository implements a **partially symmetric tensor rank decomposition** for 3-way tensors.  
+This `TNPCA_vectorise.m` implements a **partially symmetric tensor rank decomposition** for 3-way tensors.  
 Given data `X ∈ ℝ^{n × n × m}`, we extract `R` components of the form
 
 $$
@@ -72,7 +72,7 @@ Iterations alternate until convergence of the objective.
 After extracting `(v^{(r)}, u^{(r)}, d_r)`, we subtract its contribution from the residual:
 
 $$
-Xhat \;\leftarrow\; Xhat - d_r \, v^{(r)} \otimes v^{(r)} \otimes u^{(r)}.
+Xhat \; \leftarrow \; Xhat - d_r \, v^{(r)} \otimes v^{(r)} \otimes u^{(r)}.
 $$
 
 Future components are constrained to be orthogonal to earlier ones (both in node and subject modes), yielding a greedy PCA-like deflation scheme.
