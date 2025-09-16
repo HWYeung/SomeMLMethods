@@ -3,9 +3,9 @@
 This repository implements a **partially symmetric tensor rank decomposition** for 3-way tensors.  
 Given data `X ∈ ℝ^{n × n × m}`, we extract `R` components of the form
 
-\[
+$$
 \widehat{X} \;=\; \sum_{r=1}^{R} d_r \; v^{(r)} \otimes v^{(r)} \otimes u^{(r)},
-\]
+$$
 
 where
 - `v^{(r)} ∈ ℝ^n` is a node loading vector,
@@ -21,28 +21,28 @@ This is a **CP decomposition** with enforced symmetry in the first two modes (`n
 
 For a candidate pair `(v, u)` the rank-1 reconstruction is
 
-\[
+$$
 T(v,u)_{ijk} = v_i v_j u_k.
-\]
+$$
 
 We seek to maximize the contraction with the residual tensor `Xhat`:
 
-\[
+$$
 \mathcal{J}(v,u) = \langle Xhat,\, T(v,u)\rangle
 = \sum_{i,j,k} Xhat_{ijk}\, v_i v_j u_k.
-\]
+$$
 
 Equivalently, defining
 
-\[
+$$
 M(u) = \sum_{k=1}^{m} u_k \, Xhat(:,:,k) \in \mathbb{R}^{n \times n},
-\]
+$$
 
 we have
 
-\[
+$$
 \mathcal{J}(v,u) = v^\top M(u) v.
-\]
+$$
 
 ---
 
@@ -57,9 +57,9 @@ Each component is extracted using **alternating optimization**:
 2. **Update u (subject factor):**  
    Given `v`, set
 
-   \[
+   $$
    u_k \propto v^\top Xhat(:,:,k) v, \quad k=1,\dots,m,
-   \]
+   $$
 
    then normalize and project away previously extracted subject factors.
 
@@ -71,9 +71,9 @@ Iterations alternate until convergence of the objective.
 
 After extracting `(v^{(r)}, u^{(r)}, d_r)`, we subtract its contribution from the residual:
 
-\[
+$$
 Xhat \;\leftarrow\; Xhat - d_r \, v^{(r)} \otimes v^{(r)} \otimes u^{(r)}.
-\]
+$$
 
 Future components are constrained to be orthogonal to earlier ones (both in node and subject modes), yielding a greedy PCA-like deflation scheme.
 
