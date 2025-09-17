@@ -44,6 +44,7 @@ for consensus = 1:lengthconsensus
         idx = randsample(clustnum, Caselength, true);
     end
     initclust(CaseControl == 1) = idx;
+    initclust(CaseControl == 0) = 0;
     newclust = initclust;
 
     Lold = ones(clustnum, size(X,2));
@@ -56,14 +57,14 @@ for consensus = 1:lengthconsensus
         oldclust = newclust;
 
         % Learn metric with NCMML using current cluster assignments
-        [Lnew, ~, ~, ~, ProbFunct] = NCMML_v2(X, oldclust, 128, [], [], clustnum, [], [], 0.7, CV_set, Lold, exp([clustnum ones(1, clustnum)]));
+        [Lnew, ~, ~, ~, ProbFunct] = NCMML_v2(X, oldclust, 128, [], [], clustnum, [], [], [], CV_set, Lold, exp([clustnum ones(1, clustnum)]));
 
         % Compute subtype probabilities for case samples
         ProbCase = ProbFunct(X(CaseControl,:));
 
-        % Assign cases to subtype with max probability excluding baseline cluster 1
-        [~, maxIdx] = max(ProbCase(:, 2:end), [], 2);
-        newclust(CaseControl == 1) = maxIdx + 1;  % +1 because 2:end indices correspond to cluster 2..k
+        % For CASES only: assign to subtype with max probability (excluding cluster 0)
+        [~, maxIdx] = max(ProbAll(CaseControl == 1, 2:end), [], 2); % Look at columns 2:end
+        newclust(CaseControl == 1) = maxIdx; % This gives clusters 1, 2, 3, ..., clustnum
     end
 
     consensuscluster(:, consensus) = newclust(CaseControl == 1);
@@ -74,7 +75,7 @@ ClusterCase = consensus_clustering(consensuscluster, clustnum);
 Cluster(CaseControl == 1) = ClusterCase;
 
 disp('Recalculating the Mahalanobis Metric ... ');
-[L_best, F2, ~, ~, ProbFunct] = NCMML(X, Cluster, 128, regularisation, clustnum, 20000, 1000, 0.7, [], [], exp([clustnum ones(1, clustnum)]));
+[L_best, F2, ~, ~, ProbFunct] = NCMML_v2(X, Cluster, 128, [], [], clustnum, 20000, 1000, [], CV_set, [], exp([clustnum ones(1, clustnum)]));
 
 Transformation = L_best;
 
@@ -125,3 +126,4 @@ end
 cluster_init=consensus_clustering(init_concensus,k);
 
 end
+
