@@ -1,4 +1,5 @@
-function [Cluster, Transformation, F2, numberiterforhydra, ProbFunct] = NCA_HYDRA_v2(X, clustnum, CaseControl, regularisation, hydraiter, kmeansinit, lengthconsensus)
+function [Cluster, Transformation, F2, numberiterforhydra, ProbFunct] = NCA_HYDRA_v2(X, ...
+    clustnum, CaseControl, CV_set, hydraiter, kmeansinit, lengthconsensus)
 % NCA_HYDRA
 %   Performs subtype discovery with a hybrid approach combining 
 %   Nearest Class Mean Metric Learning (NCMML) and HYDRA clustering.
@@ -29,10 +30,7 @@ Cluster = zeros(size(X,1),1);
 % Matrix to store clustering results for consensus runs (only for cases)
 consensuscluster = zeros(sum(CaseControl == 1), lengthconsensus);
 
-textprogressbar(['HYDRA running ' num2str(lengthconsensus) ' clustering: ']);
-
 for consensus = 1:lengthconsensus
-    textprogressbar(consensus * 100 / lengthconsensus);
     numberiterforhydra = 0;
     initclust = zeros(size(X,1),1);
     Caselength = sum(CaseControl);
@@ -58,7 +56,7 @@ for consensus = 1:lengthconsensus
         oldclust = newclust;
 
         % Learn metric with NCMML using current cluster assignments
-        [Lnew, ~, ~, ~, ProbFunct] = NCMML(X, oldclust, 128, regularisation, clustnum, 400, 200, 0.7, [], Lold, exp([clustnum ones(1, clustnum)]));
+        [Lnew, ~, ~, ~, ProbFunct] = NCMML_v2(X, oldclust, 128, [], [], clustnum, [], [], 0.7, CV_set, Lold, exp([clustnum ones(1, clustnum)]));
 
         % Compute subtype probabilities for case samples
         ProbCase = ProbFunct(X(CaseControl,:));
@@ -70,9 +68,6 @@ for consensus = 1:lengthconsensus
 
     consensuscluster(:, consensus) = newclust(CaseControl == 1);
 end
-
-textprogressbar('done with generating clustering results');
-cleanupObj = onCleanup(@() clear('textprogressbar')); 
 
 disp('Running Consensus Clustering ... ');
 ClusterCase = consensus_clustering(consensuscluster, clustnum);
@@ -128,4 +123,5 @@ for randomfeatset = 1:numconsensus
     init_concensus(:,randomfeatset) = idx;
 end
 cluster_init=consensus_clustering(init_concensus,k);
+
 end
