@@ -1,6 +1,6 @@
 function [V,U,D,XPrin,Xhat] = TNPCA_vectorised(X,R,Masking)
 
-% My adaptation vectorised according to Zhang et al.
+% My vectorised adaptation of Zhang et al.
 % Tensor network factorizations: Relationships between brain structural connectomes and traits
 % Masking is the network thresholding matrix
 
@@ -154,3 +154,4 @@ function v = batched_null_power_iteration(Mu, basis, num_iters, tol)
     end
 
 end
+
