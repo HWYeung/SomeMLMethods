@@ -1,5 +1,5 @@
-function [L_best, F_history, F_train_history, epoch, normGrad, ProbFunct, lambda_history] = NCMML_v2(X, ...
-    label, batchsize, lambda_frob_init, lambda_spec_init, margins, improve, maxepoch, percent, CVset, Linit, weightimportance)
+function [L_best, F_history, epoch, normGrad, ProbFunct, lambda_history] = NCMML_v2(X, ...
+    label, batchsize, lambda_frob_init, lambda_spec_init, margins, improve, maxepoch, percent, CVset, Linit, weightimportance, CaseControl)
 % NCMML_v2: Nearest Class Mean Metric Learning with dual adaptive regularization
 %   Learns a Mahalanobis-like transformation matrix L using log-likelihood
 %   score formulation and gradient ascent with two adaptive regularization terms:
@@ -39,7 +39,7 @@ if nargin < 4 || isempty(lambda_frob_init)
 end
 
 if nargin < 5 || isempty(lambda_spec_init)
-    lambda_spec_init = 1e-4;  % Good default for spectral regularization
+    lambda_spec_init = 1e-5;  % Good default for spectral regularization
 end
 
 if nargin < 6 || isempty(margins)
@@ -47,11 +47,11 @@ if nargin < 6 || isempty(margins)
 end
 
 if nargin < 7 || isempty(improve)
-    improve = 20;             % Default early stopping patience
+    improve = 10000;             % Default early stopping patience
 end
 
 if nargin < 8 || isempty(maxepoch)
-    maxepoch = 500;           % Default maximum epochs
+    maxepoch = 10;           % Default maximum epochs
 end
 
 if nargin < 9 || isempty(percent)
@@ -84,12 +84,6 @@ else
 end
 
 LabelMatrix = label == unique(label)';
-if isempty(Linit) || all(all(Linit == 0))
-    L = initialisedW([margins size(X,2)], 'xavier');
-    L = L / norm(L);
-else
-    L = Linit;
-end
 
 if isempty(weightimportance)
     Wimpt = ones(1, length(unique(label)));
@@ -98,22 +92,38 @@ else
 end
 
 normGrad = [];
-lambda_frob = lambda_frob_init;
 lambda_spec = lambda_spec_init;
 
-% Adaptive regularization parameters
-frob_adapt_rate = 0.1;      % Adaptation rate for Frobenius regularization
-spec_adapt_rate = 0.05;     % Adaptation rate for spectral regularization
-min_frob = 1e-6;           % Minimum Frobenius regularization
-max_frob = 1.0;            % Maximum Frobenius regularization
-min_spec = 1e-8;           % Minimum spectral regularization
-max_spec = 0.1;            % Maximum spectral regularization
-target_cond = 100;         % Target condition number for stability
+% === DROPOUT ===
+dropout_rate = 0.20; 
+dropout_epoch_start = 5;
 
-% Learning rate parameters
-base_lr = 0.1;
-lr_decay = 0.95;
-lr_decay_epoch = 50;
+% === NESTEROV ACCELERATION
+momentum = 0.85;              % Momentum coefficient
+velocity = zeros([margins size(X,2)]);   % Velocity term for momentum
+use_nesterov = false;
+
+% === SIMPLIFIED REGULARIZATION - START WITH JUST NUCLEAR NORM ===
+lambda_nuclear = 1e-5;           % Start very small with nuclear norm
+lambda_manifold = 0;             % Disable manifold initially
+
+% Conservative adaptation
+spec_adapt_rate = 0.005;
+nuclear_adapt_rate = 0.001;
+
+% Very tight bounds
+min_spec = 1e-9;
+max_spec = 1e-3;
+min_nuclear = 1e-7;
+max_nuclear = 1e-3;
+
+target_cond = 5;                 % More conservative target
+
+% Much more conservative learning parameters
+base_lr = 0.05;                 % 10x smaller learning rate
+lr_decay = 0.99;
+lr_decay_epoch = 5;
+max_grad_norm = 100.0;            % Tighter gradient clipping
 
 if isempty(TrainInd)
     ClassMean = X' * LabelMatrix ./ sum(LabelMatrix);
@@ -121,36 +131,75 @@ else
     ClassMean = X(TrainInd,:)' * LabelMatrix(TrainInd,:) ./ sum(LabelMatrix(TrainInd,:));
 end
 
-P = NCMC(X, L, ClassMean) + eps;
 Weight = sum(LabelMatrix .* Wimpt ./ sum(LabelMatrix .* Wimpt, 'all'), 2);
 
-% Compute initial scores with both regularization terms
+if isempty(Linit) || all(all(Linit == 0))
+    % Option 1: Multiple random initializations with best validation
+    num_init = 100;
+    best_init_score = -inf;
+    best_init_L = [];
+    
+    for init_idx = 1:num_init
+        L_candidate = initialisedW([margins size(X,2)], 'xavier');
+        L_candidate = L_candidate / norm(L_candidate);
+        
+        % Quick validation of this initialization
+        P_init = NCMC(X, L_candidate, ClassMean) + eps;
+        init_score = compute_log_likelihood_score(P_init, LabelMatrix, Weight, ValidInd);
+        
+        if init_score > best_init_score
+            best_init_score = init_score;
+            best_init_L = L_candidate;
+        end
+    end
+    L = best_init_L;
+    fprintf('Selected best initialization with score: %.4f\n', best_init_score);
+else
+    L = Linit;
+end
+
+P = NCMC(X, L, ClassMean) + eps;
+
+
+% Compute initial scores - JUST spectral + nuclear
 spec_penalty = lambda_spec * logdet_penalty(L);
-frob_penalty = lambda_frob * norm(L, 'fro')^2;
-F_val = compute_log_likelihood_score(P, LabelMatrix, Weight, ValidInd) - spec_penalty - frob_penalty;
+nuclear_penalty = lambda_nuclear * sum(svd(L));
+
+F_val = compute_log_likelihood_score(P, LabelMatrix, Weight, ValidInd) - ...
+        spec_penalty - nuclear_penalty;
 F_train = compute_log_likelihood_score(P, LabelMatrix, Weight, TrainInd);
 F = F_val;
-F_history = F_val;
-F_train_history = F_train;
-lambda_history = [lambda_frob, lambda_spec];
+F_history = [F_train; F_val];
+lambda_history = [lambda_spec; lambda_nuclear];
 L_best = L;
 ProbFunct = @(x) NCMC(x, L_best, ClassMean);
 push = 1; epoch = 1; valid = 0;
 
-figure; 
-subplot(2,1,1); hold on;
-title('Training and Validation Score');
-xlabel('Iteration'); ylabel('Score');
-legend('Train','Validation');
-
-subplot(2,1,2); hold on;
-title('Regularization Parameters');
-xlabel('Iteration'); ylabel('Lambda');
-legend('Frobenius', 'Spectral');
+% === GRADIENT NORM TRACKING FOR ADAPTIVE CLIPPING ===
+grad_norm_history = [];
 
 while epoch <= maxepoch && valid <= improve
-    % Adjust learning rate based on epoch
-    current_lr = base_lr * (lr_decay ^ floor(epoch / lr_decay_epoch));
+    current_lr = base_lr * (lr_decay ^ floor(epoch / lr_decay_epoch)); 
+
+    if epoch >= dropout_epoch_start
+        % Create dropout mask for features
+        dropout_mask = (rand(1, size(X, 2)) > dropout_rate);
+        X_dropout = X .* dropout_mask;
+        fprintf('Applying dropout: %.1f%% features kept\n', mean(dropout_mask) * 100);
+    else
+        X_dropout = X;  % No dropout during warmup
+    end
+    
+    % Update ClassMean with dropped-out features if needed
+    if epoch >= dropout_epoch_start
+        if isempty(TrainInd)
+            ClassMean_current = X_dropout' * LabelMatrix ./ sum(LabelMatrix);
+        else
+            ClassMean_current = X_dropout(TrainInd,:)' * LabelMatrix(TrainInd,:) ./ sum(LabelMatrix(TrainInd,:));
+        end
+    else
+        ClassMean_current = ClassMean;  % Use original during warmup
+    end
     
     batches = ceil(Trainsize / batchsize);
     shuffle = randperm(Trainsize);
@@ -158,46 +207,139 @@ while epoch <= maxepoch && valid <= improve
     for i = 1:batches
         idx = shuffle((i-1)*batchsize +1 : min(i*batchsize, Trainsize));
         if isempty(TrainInd)
-            Grad = NCMMLGradient(X, ClassMean, P, LabelMatrix, Weight, idx);
+            Grad = NCMMLGradient(X_dropout, ClassMean_current, P, LabelMatrix, Weight, idx);
         else
-            Grad = NCMMLGradient(X, ClassMean, P, LabelMatrix, Weight, TrainInd(idx));
+            Grad = NCMMLGradient(X_dropout, ClassMean_current, P, LabelMatrix, Weight, TrainInd(idx));
         end
 
-        % Compute both regularization gradients
-        logdet_grad = 2 * lambda_spec * ((L' * L + eps * eye(size(L,2))) \ L);
-        frob_grad = 2 * lambda_frob * L;
+        % === AGGRESSIVE GRADIENT CLIPPING AND CHECKING ===
+        grad_norm = norm(Grad(:));
+        grad_norm_history = [grad_norm_history, grad_norm];
         
-        % Combined gradient
-        Grad = L * Grad + logdet_grad + frob_grad;
-        normGrad = [normGrad, norm(Grad)];
+        % Adaptive gradient clipping based on history
+        if length(grad_norm_history) > 10
+            median_grad_norm = median(grad_norm_history(end-9:end));
+            current_max_grad = min(max_grad_norm, 2 * median_grad_norm);
+        else
+            current_max_grad = max_grad_norm;
+        end
         
-        % Update L with current learning rate
-        L = L + current_lr * log(1 + push) * Grad;
+        if grad_norm > current_max_grad
+            Grad = Grad * (current_max_grad / grad_norm);
+            fprintf('Gradient clipped: %.2e -> %.2e\n', grad_norm, current_max_grad);
+        end
+        
+        if any(isnan(Grad(:))) || any(isinf(Grad(:)))
+            warning('NaN/Inf in gradient - skipping update');
+            continue;
+        end
+
+        % === SIMPLIFIED REGULARIZATION GRADIENTS ===
+        % Spectral regularization gradient (more stable computation)
+        [U, S, V] = svd(L' * L + 1e-6 * eye(size(L, 2)));  % Larger epsilon
+        s = diag(S);
+        s_inv = s ./ (s.^2 + 1e-10);  % More stable inversion
+        M_inv = V * diag(s_inv) * U';
+        logdet_grad = 2 * lambda_spec * (L * M_inv);
+
+        % Nuclear norm gradient (with safety)
+        if lambda_nuclear > 0
+            [U_nuc, S_nuc, V_nuc] = svd(L, 'econ');
+            min_sv = min(diag(S_nuc));
+            if min_sv > 1e-8  % Only apply if well-conditioned
+                nuclear_grad = lambda_nuclear * U_nuc * V_nuc';
+            else
+                nuclear_grad = 0;
+                lambda_nuclear = max(lambda_nuclear * 0.5, min_nuclear);
+            end
+        else
+            nuclear_grad = 0;
+        end
+
+        % Combined gradient (much simpler)
+        Grad = L * Grad + logdet_grad + nuclear_grad;
+        total_grad_norm = norm(Grad(:));
+        normGrad = [normGrad, total_grad_norm];
+        
+        % Check update magnitude
+        update_step = current_lr * min(log(1 + push), 2.0) * Grad;
+        update_norm = norm(update_step(:));
+        if update_norm > 0.1 * norm(L(:))
+            update_step = update_step * (0.1 * norm(L(:)) / update_norm);
+            fprintf('Update step too large: %.2e, scaling down\n', update_norm);
+        end
+        
+        if use_nesterov
+            % === EFFICIENT NESTEROV APPROXIMATION ===
+            % Store current velocity
+            velocity_prev = velocity;
+            
+            % Update velocity with current gradient
+            velocity = momentum * velocity - update_step;
+            
+            % Nesterov update: jump ahead then correct
+            L = L - momentum * velocity_prev + (1 + momentum) * velocity;
+            if valid == 0  % Making progress
+                momentum = min(0.9, momentum + 0.01);
+            else
+                momentum = max(0.2, momentum * 0.95);
+            end
+        else
+            % Standard update
+            L = L + update_step;
+        end
+        
+        % === STRICT NUMERICAL STABILITY CHECK ===
+        if any(isnan(L(:))) || any(isinf(L(:))) || norm(L(:)) > 1e6
+            warning('Numerical instability detected - resetting to best');
+            L = L_best;
+            current_lr = current_lr * 0.1;
+            continue;
+        end
+        
         P = NCMC(X, L, ClassMean) + eps;
 
-        % Compute new scores with both regularization terms
+        % Compute new scores
         spec_penalty = lambda_spec * logdet_penalty(L);
-        frob_penalty = lambda_frob * norm(L, 'fro')^2;
-        F_val = compute_log_likelihood_score(P, LabelMatrix, Weight, ValidInd) - spec_penalty - frob_penalty;
-        F_train = compute_log_likelihood_score(P, LabelMatrix, Weight, TrainInd);
+        nuclear_penalty = lambda_nuclear * sum(svd(L));
+        
+        % F_val_new = compute_log_likelihood_score(P, LabelMatrix, Weight, ValidInd);
+        % F_train_new = compute_log_likelihood_score(P, LabelMatrix, Weight, TrainInd);
 
-        % Adaptive regularization based on condition number and generalization gap
-        if ~isempty(ValidInd)
-            % Calculate current condition number
+        F_val_new = compute_accuracy(P, CaseControl, ValidInd);
+        F_train_new = compute_accuracy(P, CaseControl, TrainInd);
+        
+        % === EXTREME SAFETY CHECK ===
+        if abs(F_val_new) > 1e3 || isnan(F_val_new) || isinf(F_val_new)
+            warning('Validation loss suspicious: %.2e - reverting', F_val_new);
+            L = L - update_step;  % Revert update
+            current_lr = current_lr * 0.2;
+            
+            % Reduce regularization if causing issues
+            lambda_nuclear = lambda_nuclear * 0.5;
+            lambda_spec = lambda_spec * 0.5;
+            
+            continue;
+        end
+        
+        F_val = F_val_new;
+        F_train = F_train_new;
+
+        % === VERY CONSERVATIVE ADAPTATION ===
+        if ~isempty(ValidInd) && F_val > -1e3  % Only adapt if reasonable
             s = svd(L);
             cond_number = max(s) / (min(s) + eps);
             
-            % Adjust spectral regularization based on condition number
-            spec_error = (cond_number - target_cond) / target_cond;
-            lambda_spec = min(max(lambda_spec * (1 + spec_adapt_rate * spec_error), min_spec), max_spec);
-            
-            % Adjust Frobenius regularization based on generalization gap
+            if cond_number > 10  % Only adjust if really needed
+                spec_error = (cond_number - target_cond) / target_cond;
+                lambda_spec = min(max(lambda_spec * (1 + 0.001 * sign(spec_error)), min_spec), max_spec);
+            end
             generalization_gap = (F_train - F_val) / (abs(F_train) + eps);
-            lambda_frob = min(max(lambda_frob * (1 + frob_adapt_rate * generalization_gap), min_frob), max_frob);
+            lambda_nuclear = min(max(lambda_nuclear * (1 + 0.0005 * generalization_gap), min_nuclear), max_nuclear);
         end
 
         % Update best solution
-        if F_val > F
+        if F_val > F && abs(F_val) < 1e3 && F_train >= F_val % Only update if reasonable
             F = F_val;
             L_best = L;
             valid = 0;
@@ -206,50 +348,54 @@ while epoch <= maxepoch && valid <= improve
             valid = valid + 1;
         end
 
-        % Adjust push factor based on progress
-        if abs(F_val - F_history(end)) / abs(F_val) < 1e-4
-            push = push + 1;
+        % Adjust push factor very conservatively
+        if valid == 0 && abs(F_val - F_history(2,end)) / abs(F_val) < 1e-3
+            push = min(push + 0.1, 3.0);
         else
-            push = max(1, push * 0.9);  % Reduce push if progress is made
+            push = max(1, push * 0.95);
         end
 
-        F_history = [F_history, F_val];
-        F_train_history = [F_train_history, F_train];
-        lambda_history = [lambda_history; [lambda_frob, lambda_spec]];
+        F_history = [F_history [F_train; F_val]];
+        lambda_history = [lambda_history [lambda_spec; lambda_nuclear]];
 
-        subplot(2,1,1);
-        plot(length(F_history), F_train, 'b.');
-        plot(length(F_history), F_val, 'r.');
-        
-        subplot(2,1,2);
-        plot(length(F_history), lambda_frob, 'g.');
-        plot(length(F_history), lambda_spec, 'm.');
-        
-        drawnow;
+        % Simple plotting
+        if mod(i, 5) == 0
+            subplot(2,1,1);
+            plot(1:length(F_history), F_history(1,:), 'b-', 1:length(F_history), F_history(2,:), 'r-');
+            xlabel('Iteration'); ylabel('Loss'); title('Loss');
+            legend('Train', 'Val');
+            
+            subplot(2,1,2);
+            semilogy(1:length(lambda_history), lambda_history(1,:), 'g-', ...
+                     1:length(lambda_history), lambda_history(2,:), 'm-');
+            xlabel('Iteration'); ylabel('Lambda'); title('Regularization');
+            legend('Spectral', 'Nuclear');
+            drawnow;
+        end
 
-        if isnan(F_val) || valid > improve
+        if valid > improve
             break
         end
     end
     
-    % Display progress
-    if mod(epoch, 10) == 0
-        fprintf('Epoch %d: F_val=%.4f, F_train=%.4f, cond=%.1f, lambda_frob=%.2e, lambda_spec=%.2e\n', ...
-                epoch, F_val, F_train, cond_number, lambda_frob, lambda_spec);
+    % Minimal progress reporting
+    if mod(epoch, 1) == 0
+        s = svd(L);
+        cond_number = max(s) / (min(s) + eps);
+        fprintf('Epoch %d: F_val=%.3f%%, F_train=%.3f%%, cond=%.1f, grad_norm=%.2e\n', ...
+                epoch, F_val, F_train, cond_number, median(grad_norm_history(max(1,end-9):end)));
     end
     
     epoch = epoch + 1;
     
-    % Early stopping check
-    if valid > improve
-        fprintf('Early stopping at epoch %d\n', epoch);
+    if valid > improve || current_lr < 1e-8
+        fprintf('Stopping: valid=%d, lr=%.2e\n', valid, current_lr);
         break;
     end
-    close all;
 end
 
-fprintf('Final: lambda_frob=%.2e, lambda_spec=%.2e, F_val=%.4f, F_train=%.4f\n', ...
-        lambda_frob, lambda_spec, F_val, F_train);
+fprintf('Final: F_val=%.3f%%, F_train=%.4f\n', F_val, F_train);
+fprintf('Final Lambdas: spec=%.2e, nuclear=%.2e\n', lambda_spec, lambda_nuclear);
 end
 
 function [Grad] = NCMMLGradient(X, ClassMean, P, LabelMatrix, Weight, Ibatch)
@@ -279,6 +425,31 @@ if isempty(ValidInd)
     ValidInd = 1:size(P,1);
 end
 score = sum(Weight(ValidInd) .* sum(LabelMatrix(ValidInd,:) .* log(P(ValidInd,:)), 2)) ./ sum(Weight(ValidInd));
+end
+
+function accuracy = compute_accuracy(P, CaseControl, ValidInd)
+    % Compute case-control accuracy
+    % P: probability matrix (n_samples x n_classes)
+    % LabelMatrix: one-hot encoded labels
+    % CaseControl: binary vector (0=control, 1=case)
+    % ValidInd: validation indices
+    
+    if isempty(ValidInd)
+        ValidInd = 1:size(P,1);
+    end
+    
+    % Get predicted clusters (MATLAB 1-based indexing)
+    [~, pred_clusters] = max(P(ValidInd, :), [], 2);
+    pred_clusters = pred_clusters - 1;  % Convert to 0-based: 1→0, 2→1, 3→2, etc.
+    
+    % True case/control status
+    true_status = CaseControl(ValidInd);
+    
+    % Predicted status: 0 if cluster 0, 1 if cluster > 0
+    pred_status = (pred_clusters > 0);
+    
+    % Case-control accuracy
+    accuracy = mean(pred_status == true_status) * 100;
 end
 
 function W = initialisedW(sz, method)
