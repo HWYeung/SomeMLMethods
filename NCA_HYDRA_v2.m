@@ -1,4 +1,4 @@
-function [Cluster, Transformation, F2, numberiterforhydra, ProbFunct] = NCA_HYDRA_v2(X, ...
+function [Cluster, Transformation, F2, NormFunct, ProbFunct] = NCA_HYDRA_v2(X, ...
     clustnum, CaseControl, CV_set, hydraiter, kmeansinit, lengthconsensus)
 % NCA_HYDRA
 %   Performs subtype discovery with a hybrid approach combining 
@@ -30,6 +30,14 @@ Cluster = zeros(size(X,1),1);
 % Matrix to store clustering results for consensus runs (only for cases)
 consensuscluster = zeros(sum(CaseControl == 1), lengthconsensus);
 
+TrainI = CV_set{1};
+ValidI = CV_set{2};
+[XTrain_normed, centres, scales] = normalize(X(TrainI,:));
+NormFunct = @(x) normalize(x, 'center', centres, 'scale', scales);
+XValid_normed = NormFunct(X(ValidI,:));
+X(TrainI,:) = XTrain_normed;
+X(ValidI,:) = XValid_normed;
+
 for consensus = 1:lengthconsensus
     numberiterforhydra = 0;
     initclust = zeros(size(X,1),1);
@@ -57,14 +65,36 @@ for consensus = 1:lengthconsensus
         oldclust = newclust;
 
         % Learn metric with NCMML using current cluster assignments
-        [Lnew, ~, ~, ~, ProbFunct] = NCMML_v2(X, oldclust, 128, [], [], clustnum, [], [], [], CV_set, Lold, exp([clustnum ones(1, clustnum)]));
+        [Lnew, ~, ~, ~, ProbFunct] = NCMML_v2(X, oldclust,128, [], [], clustnum, [], [], [], CV_set, Lold, [], CaseControl);
 
         % Compute subtype probabilities for case samples
-        ProbCase = ProbFunct(X(CaseControl,:));
+        ProbAll = ProbFunct(X);
 
         % For CASES only: assign to subtype with max probability (excluding cluster 0)
         [~, maxIdx] = max(ProbAll(CaseControl == 1, 2:end), [], 2); % Look at columns 2:end
         newclust(CaseControl == 1) = maxIdx; % This gives clusters 1, 2, 3, ..., clustnum
+
+        [max_probs, max_clusters] = max(ProbAll, [], 2);
+        
+        % Predicted case status: 1 if max cluster > 0, 0 if max cluster == 0
+        predicted_case = (max_clusters - 1> 0);
+        
+        % True case status
+        true_case = (CaseControl == 1);
+
+        correctness = predicted_case == true_case;
+
+        if isempty(CV_set)
+            case_control_acc = mean(correctness) * 100;
+            fprintf('Iteration %d: Case-Control Acc=%.3f\n', numberiterforhydra, case_control_acc);
+        else
+            train_index = CV_set{1};
+            validation_index = CV_set{2};
+            train_acc = mean(correctness(train_index)) * 100;
+            val_acc = mean(correctness(validation_index)) * 100;
+            fprintf('Iteration %d: Training Case-Control Acc=%.3f%%, Validation Case-Control Acc=%.3f%%\n', ...
+                numberiterforhydra, train_acc, val_acc);
+        end
     end
 
     consensuscluster(:, consensus) = newclust(CaseControl == 1);
@@ -75,7 +105,7 @@ ClusterCase = consensus_clustering(consensuscluster, clustnum);
 Cluster(CaseControl == 1) = ClusterCase;
 
 disp('Recalculating the Mahalanobis Metric ... ');
-[L_best, F2, ~, ~, ProbFunct] = NCMML_v2(X, Cluster, 128, [], [], clustnum, 20000, 1000, [], CV_set, [], exp([clustnum ones(1, clustnum)]));
+[L_best, F2, ~, ~, ProbFunct] = NCMML_v2(X, Cluster, [], [], [], clustnum, [], 50, [], CV_set, [], [], CaseControl);
 
 Transformation = L_best;
 
@@ -126,4 +156,3 @@ end
 cluster_init=consensus_clustering(init_concensus,k);
 
 end
-
