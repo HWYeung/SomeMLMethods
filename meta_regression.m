@@ -149,7 +149,8 @@ function [child_feature_betas, child_bias, centers, scales] = meta_regression_ch
 
     % --- Feature ratio decreases with number of children ---
     min_ratio = 0.4;
-    feat_ratio = max(1 / log(child_model_num + 1), min_ratio);
+    feature_ratio_relation = log10(child_model_num) + 1;
+    feat_ratio = max(1 / feature_ratio_relation, min_ratio);
 
     % --- Preallocate outputs ---
     child_feature_betas = zeros(n_features, child_model_num);
@@ -201,4 +202,5 @@ function [child_feature_betas, child_bias, centers, scales] = meta_regression_ch
     [~, centers, scales] = normalize(y_heads);
 
 end
+
 
