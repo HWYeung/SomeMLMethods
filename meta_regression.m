@@ -107,9 +107,10 @@ function [model_loss, additive_feature_importance] = meta_regression(X, Y, train
     model_loss = [train_loss(min_valid_loss);
                   valid_loss(min_valid_loss);
                   test_loss(min_valid_loss)];
+    model_beta = model.Beta(:, min_valid_loss);
 
     % --- Aggregate additive feature importance (sum over children) ---
-    additive_feature_importance = sum(child_feature_betas, 2);
+    additive_feature_importance = sum(child_feature_betas .* model_beta', 2);
 
 end
 
@@ -202,5 +203,6 @@ function [child_feature_betas, child_bias, centers, scales] = meta_regression_ch
     [~, centers, scales] = normalize(y_heads);
 
 end
+
 
 
