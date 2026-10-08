@@ -129,12 +129,16 @@ L=diag(sum(cooc,2))-cooc;
 
 Ln=eye(n)-diag(sum(cooc,2).^(-1/2))*cooc*diag(sum(cooc,2).^(-1/2));
 Ln(isnan(Ln))=0;
-[V,~]=eig(Ln);
+[V,D]=eig(Ln);
+[~,order]=sort(real(diag(D)), 'ascend');
+V=V(:,order);
 try
     IDXfinal=kmeans(V(:,1:k),k,'emptyaction','drop','replicates',20);
 catch
     disp('Complex Eigenvectors Found...Using Non-Normalized Laplacian');
-    [V,~]=eig(L);
+    [V,D]=eig(L);
+    [~,order]=sort(real(diag(D)), 'ascend');
+    V=V(:,order);
     IDXfinal=kmeans(V(:,1:k),k,'emptyaction','drop','replicates',20);
 end
 
